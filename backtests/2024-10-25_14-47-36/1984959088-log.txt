@@ -1,0 +1,11 @@
+2009-12-12 00:00:00 Launching analysis for 1984959088 with LEAN Engine v2.5.0.0
+2009-12-12 00:00:00 Accurate daily end-times now enabled by default. See more at https://qnt.co/3YHaWHL. To disable it and use legacy daily bars set self.settings.daily_precise_end_time = False.
+2009-12-12 00:00:00 Algorithm starting warm up...
+2010-01-04 11:00:00 Algorithm finished warming up.
+2010-01-04 16:00:00 Runtime Error: sequence item 0: expected str instance, Symbol found
+  at OnData
+    self.Log(f"Symbols in slice: {', '.join(slice.Keys)}")
+                                  ^^^^^^^^^^^^^^^^^^^^^
+ in main.py: line 42
+
+2010-01-04 16:00:00 Algorithm Id:(1984959088) completed in 0.47 seconds at 0k data points per second. Processing total of 117 data points.

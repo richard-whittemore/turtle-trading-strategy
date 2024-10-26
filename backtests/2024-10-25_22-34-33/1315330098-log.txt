@@ -1,0 +1,15 @@
+2020-05-20 00:00:00 Launching analysis for 1315330098 with LEAN Engine v2.5.0.0
+2020-05-20 00:00:00 Accurate daily end-times now enabled by default. See more at https://qnt.co/3YHaWHL. To disable it and use legacy daily bars set self.settings.daily_precise_end_time = False.
+2020-05-20 00:00:00 Algorithm starting warm up...
+2020-05-20 00:00:00 Added equity: AAPL
+2020-05-20 00:00:00 Added equity: JPM
+2020-05-20 00:00:00 Added equity: PFE
+2020-05-20 00:00:00 Added equity: KO
+2020-05-20 00:00:00 Added equity: TSLA
+2020-05-20 00:00:00 Added equity: XOM
+2020-05-20 00:00:00 Added equity: NVDA
+2020-05-20 00:00:00 Added equity: PG
+2020-05-20 00:00:00 Added equity: HD
+2020-05-20 00:00:00 Added equity: DUK
+2020-06-29 11:00:00 Algorithm finished warming up.
+2024-10-25 16:00:00 Algorithm Id:(1315330098) completed in 0.35 seconds at 8k data points per second. Processing total of 2,650 data points.
