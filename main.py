@@ -22,8 +22,9 @@ class TurtleTradingStrategy(QCAlgorithm):
         self.entry_channels = {}
         self.exit_channels = {}
         self.atrs = {}
+        self.stop_losses = {}
 
-        #for symbol_str in ["AAPL", "JPM", "PFE", "KO", "TSLA", "XOM", "NVDA", "PG", "HD", "DUK"]:
+        # for symbol_str in ["AAPL", "JPM", "PFE", "KO", "TSLA", "XOM", "NVDA", "PG", "HD", "DUK"]:
         for symbol_str in ["AAPL"]:
             equity = self.AddEquity(symbol_str, Resolution.Daily)
             self.symbols.append(equity.Symbol)
@@ -34,6 +35,7 @@ class TurtleTradingStrategy(QCAlgorithm):
 
         self.SetWarmUp(timedelta(days=self.ENTRY_CHANNEL))
 
+        self.daily_trades = []
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.At(16, 0), self.LogPortfolioState)
 
     def OnData(self, slice):
@@ -83,9 +85,19 @@ class TurtleTradingStrategy(QCAlgorithm):
                 if self.Portfolio[symbol].IsLong and current_price <= lower_exit:
                     self.Log(f"Exit signal for long position: {symbol} price {current_price} below exit channel {lower_exit}")
                     self.Liquidate(symbol)
+                    self.daily_trades.append(f"Exited Long: {symbol}, Price: {current_price}")
                 elif self.Portfolio[symbol].IsShort and current_price >= upper_exit:
                     self.Log(f"Exit signal for short position: {symbol} price {current_price} above exit channel {upper_exit}")
                     self.Liquidate(symbol)
+                    self.daily_trades.append(f"Exited Short: {symbol}, Price: {current_price}")
+                if self.Portfolio[symbol].Invested:
+                    current_price = slice.Bars[symbol].Close
+                    if (self.Portfolio[symbol].IsLong and current_price <= self.stop_losses[symbol]) or \
+                       (self.Portfolio[symbol].IsShort and current_price >= self.stop_losses[symbol]):
+                        self.Log(f"Stop loss hit for {symbol} at {current_price}")
+                        self.Liquidate(symbol)
+                        self.daily_trades.append(f"Exited position due to stop loss: {symbol}, Price: {current_price}")
+                        del self.stop_losses[symbol]
 
     def EnterLong(self, symbol):
         equity = self.Securities[symbol]
@@ -96,7 +108,10 @@ class TurtleTradingStrategy(QCAlgorithm):
             self.Log(f"Not enough cash to enter long position in {symbol}. Required: ${cost}, Available: ${self.Portfolio.Cash}")
             return
         self.MarketOrder(symbol, quantity)
-        self.Log(f"Entered Long: {symbol}, Quantity: {quantity}, Price: {equity.Price}, Stop: {stop_price}")
+        trade_info = f"Entered Long: {symbol}, Quantity: {quantity}, Price: {equity.Price}, Stop: {stop_price}"
+        self.Log(trade_info)
+        self.daily_trades.append(trade_info)
+        self.stop_losses[symbol] = stop_price
 
     def EnterShort(self, symbol):
         equity = self.Securities[symbol]
@@ -107,7 +122,10 @@ class TurtleTradingStrategy(QCAlgorithm):
             self.Log(f"Not enough cash to enter short position in {symbol}. Required: ${cost}, Available: ${self.Portfolio.Cash}")
             return
         self.MarketOrder(symbol, -quantity)
-        self.Log(f"Entered Short: {symbol}, Quantity: {quantity}, Price: {equity.Price}, Stop: {stop_price}")
+        trade_info = f"Entered Short: {symbol}, Quantity: {quantity}, Price: {equity.Price}, Stop: {stop_price}"
+        self.Log(trade_info)
+        self.daily_trades.append(trade_info)
+        self.stop_losses[symbol] = stop_price
 
     def CalculatePositionSize(self, equity, stop_price):
         risk_amount = self.Portfolio.TotalPortfolioValue * self.RISK_PER_TRADE
@@ -154,6 +172,17 @@ class TurtleTradingStrategy(QCAlgorithm):
                 self.Log(f"  Market Value: ${market_value}")
                 self.Log(f"  Unrealized P/L: ${unrealized_pnl:.2f} ({unrealized_pnl_percent:.2%})")
                 self.Log(f"  Exit Price: ${exit_price}")
+
+        # Log the day's trades
+        self.Log("Today's Trades:")
+        if self.daily_trades:
+            for trade in self.daily_trades:
+                self.Log(f"  {trade}")
+        else:
+            self.Log("  No trades today")
+
+        # Clear the daily trades for the next day
+        self.daily_trades = []
 
         self.Log("=====================================")
 
