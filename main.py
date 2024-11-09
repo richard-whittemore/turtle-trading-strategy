@@ -108,13 +108,8 @@ class TurtleTradingStrategy(QCAlgorithm):
                                   f"P/L: ${profit_loss:.2f} ({profit_loss_percent:.2f}%)")
                     self.Log(f"Exit signal for long position: {symbol} price {current_price} below Donchainlong exit {donchain_long_exit}")
                     self.Log(exit_message)
-                    
-                    if symbol not in self.stop_losses:
-                        self.Log(f"WARNING: Liquidating position for {symbol} that had no stop loss!")
-                    else:
-                        del self.stop_losses[symbol]
-                        
                     self.Liquidate(symbol)
+                    self.CleanupPosition(symbol)  # Clean up all tracking variables
                     self.daily_trades.append(exit_message)
 
                 elif self.Portfolio[symbol].IsShort and current_price >= donchain_short_exit:
@@ -125,13 +120,8 @@ class TurtleTradingStrategy(QCAlgorithm):
                                   f"P/L: ${profit_loss:.2f} ({profit_loss_percent:.2f}%)")
                     self.Log(f"Exit signal for short position: {symbol} price {current_price} above short exit {donchain_short_exit}")
                     self.Log(exit_message)
-                    
-                    if symbol not in self.stop_losses:
-                        self.Log(f"WARNING: Liquidating position for {symbol} that had no stop loss!")
-                    else:
-                        del self.stop_losses[symbol]
-                        
                     self.Liquidate(symbol)
+                    self.CleanupPosition(symbol)  # Clean up all tracking variables
                     self.daily_trades.append(exit_message)
 
                 # Modified stop loss check
@@ -150,6 +140,7 @@ class TurtleTradingStrategy(QCAlgorithm):
                         self.Log(f"Stop loss hit for {symbol} at {current_price}")
                         self.Log(exit_message)
                         self.Liquidate(symbol)
+                        self.CleanupPosition(symbol)  # Clean up all tracking variables
                         self.daily_trades.append(exit_message)
                         del self.stop_losses[symbol]
 
@@ -335,6 +326,19 @@ class TurtleTradingStrategy(QCAlgorithm):
                      f"Quantity: {quantity}, Price: {equity.Price}, Stop: {stop_price}")
         self.Log(trade_info)
         self.daily_trades.append(trade_info)
+
+    def CleanupPosition(self, symbol):
+        """
+        Clean up all tracking variables when exiting a position
+        """
+        if symbol in self.stop_losses:
+            del self.stop_losses[symbol]
+        if symbol in self.entry_prices:
+            del self.entry_prices[symbol]
+        if symbol in self.position_units:
+            del self.position_units[symbol]
+        if symbol in self.last_add_price:
+            del self.last_add_price[symbol]
 
 class DonchianChannel(PythonIndicator):
     def __init__(self, symbol, period):
