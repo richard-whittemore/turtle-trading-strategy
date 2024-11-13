@@ -134,6 +134,7 @@ class TurtleTradingStrategy(QCAlgorithm):
             # Update technical indicators with latest price data
             self.entry_channels[symbol].Update(slice.Bars[symbol])
             self.exit_channels[symbol].Update(slice.Bars[symbol])
+            # Note: ATR indicator (self.atrs[symbol]) is updated automatically by QuantConnect
 
             # Verify indicators are ready before making trading decisions
             if not self.entry_channels[symbol].IsReady or not self.exit_channels[symbol].IsReady or not self.atrs[symbol].IsReady:
@@ -142,6 +143,7 @@ class TurtleTradingStrategy(QCAlgorithm):
 
             # SECTION 3: CALCULATE TRADING SIGNALS
             # Get current price and breakout levels
+            # TODO: USING THE BUILT-IN DONCHAIN CHANNEL INDICATORS INSTEAD OF CUSTOM ONES
             current_price = slice.Bars[symbol].Close
             donchain_long_entry = self.entry_channels[symbol].Upper.Current.Value    # 55-day high for long entries
             donchain_short_entry = self.entry_channels[symbol].Lower.Current.Value   # 55-day low for short entries
