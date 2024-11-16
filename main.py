@@ -52,15 +52,13 @@ class TurtleTradingStrategy(QCAlgorithm):
             self.symbols.append(equity.Symbol)
             
             # Create and store technical indicators for this symbol:
-            # 1. Entry channel (55-day Donchian) for generating entry signals; custom indicator that needs manual updates
-            # TODO: Use the built-in DonchianChannel indicator instead
-            self.entry_channels[equity.Symbol] = self.DONCHIAN(equity.Symbol, self.ENTRY_CHANNEL)
+            # 1. Entry channel (55-day Donchian) for generating entry signals
+            self.entry_channels[equity.Symbol] = self.DCH(equity.Symbol, self.ENTRY_CHANNEL)
             
-            # 2. Exit channel (20-day Donchian) for generating exit signals; custom indicator that needs manual updates
-            # TODO: Use the built-in DonchianChannel indicator instead
-            self.exit_channels[equity.Symbol] = self.DONCHIAN(equity.Symbol, self.EXIT_CHANNEL)
+            # 2. Exit channel (20-day Donchian) for generating exit signals
+            self.exit_channels[equity.Symbol] = self.DCH(equity.Symbol, self.EXIT_CHANNEL)
             
-            # 3. Average True Range (ATR) for volatility measurement and position sizing; built-in indicator that updates automatically
+            # 3. Average True Range (ATR) for volatility measurement and position sizing
             self.atrs[equity.Symbol] = self.ATR(equity.Symbol, self.ATR_PERIOD, MovingAverageType.Simple)
             
             # Log the addition of this symbol to our universe
@@ -136,9 +134,9 @@ class TurtleTradingStrategy(QCAlgorithm):
             self.Log(f"Data for {symbol}: Open={slice.Bars[symbol].Open}, High={slice.Bars[symbol].High}, Low={slice.Bars[symbol].Low}, Close={slice.Bars[symbol].Close}")
 
             # Update technical indicators with latest price data
+            # TODO: Determine if we still need this since we are now using the built-in Donchian channel indicator
             self.entry_channels[symbol].Update(slice.Bars[symbol])
             self.exit_channels[symbol].Update(slice.Bars[symbol])
-            # Note: ATR indicator (self.atrs[symbol]) is updated automatically by QuantConnect
 
             # Verify indicators are ready before making trading decisions
             if not self.entry_channels[symbol].IsReady or not self.exit_channels[symbol].IsReady or not self.atrs[symbol].IsReady:
@@ -147,7 +145,6 @@ class TurtleTradingStrategy(QCAlgorithm):
 
             # SECTION 3: CALCULATE TRADING SIGNALS
             # Get current price and breakout levels
-            # TODO: USING THE BUILT-IN DONCHAIN CHANNEL INDICATORS INSTEAD OF CUSTOM ONES
             current_price = slice.Bars[symbol].Close
             donchain_long_entry = self.entry_channels[symbol].Upper.Current.Value    # 55-day high for long entries
             donchain_short_entry = self.entry_channels[symbol].Lower.Current.Value   # 55-day low for short entries
@@ -396,12 +393,6 @@ class TurtleTradingStrategy(QCAlgorithm):
         # Ensure we always return at least 1 share/contract
         return max(1, share_quantity)
 
-    def DONCHIAN(self, symbol, period):
-        """
-        Create a Donchian Channel indicator for the given symbol and period.
-        """
-        return DonchianChannel(symbol, period)
-
     def LogPortfolioState(self):
         """
         Log the current state of the portfolio, including cash, equity value, and details of each holding.
@@ -558,48 +549,3 @@ class TurtleTradingStrategy(QCAlgorithm):
             del self.pyramid_level[symbol]
         if symbol in self.last_add_price:
             del self.last_add_price[symbol]
-
-class DonchianChannel(PythonIndicator):
-    def __init__(self, symbol, period):
-        """
-        Initialize a Donchian Channel indicator with the given symbol and period.
-        """
-        self.Symbol = symbol
-        self.Period = period
-        self.Upper = Maximum(f"{symbol}_Upper_{period}", period)
-        self.Lower = Minimum(f"{symbol}_Lower_{period}", period)
-        self.WarmUpPeriod = period
-        self.Time = datetime.min
-        self.Value = 0
-        self.Samples = 0
-
-    def Update(self, input):
-        """
-        Update the Donchian Channel with new data.
-        """
-        if input.Symbol != self.Symbol:
-            return False
-        
-        self.Time = input.EndTime
-        self.Samples += 1
-        
-        upper_updated = self.Upper.Update(input.EndTime, input.High)
-        lower_updated = self.Lower.Update(input.EndTime, input.Low)
-        
-        self.Value = (self.Upper.Current.Value + self.Lower.Current.Value) / 2
-        
-        return self.IsReady
-
-    @property
-    def IsReady(self):
-        """
-        Check if the Donchian Channel is ready (has enough data).
-        """
-        return self.Samples >= self.Period
-
-    @property
-    def Current(self):
-        """
-        Get the current value of the Donchian Channel.
-        """
-        return IndicatorDataPoint(self.Time, self.Value)
