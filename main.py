@@ -33,11 +33,11 @@ class TurtleTradingStrategy(QCAlgorithm):
         # Position Management - Track active positions and their characteristics
         self.stop_losses = {}     # Dictionary[Symbol, float] - Tracks stop loss prices for each position
         self.entry_prices = {}    # Dictionary[Symbol, List[float]] - Tracks entry prices for each unit of a position
-        self.position_units = {}  # Dictionary[Symbol, int] - Tracks number of units held for each position (1-4 units)
+        self.pyramid_level = {}   # Dictionary[Symbol, int] - Tracks pyramid level for each position (1-4 levels)
 
         # Trade Management - Track trading activity and enforce trading rules
         self.last_add_price = {}  # Dictionary[Symbol, float] - Tracks the price at which we last added a unit to a position
-        self.MAX_UNITS = 4        # int - Maximum number of units allowed per position per Turtle Trading rules ## TODO: Make this dynamic per Turtle Trading rules
+        self.MAX_PYRAMID_LEVELS = 4  # int - Maximum number of times we can pyramid (add to) a position per Turtle Trading rules
         self.daily_trades = []    # List[str] - Tracks trades made during the current day for daily reporting
 
         # Symbol Management - Track which symbols we're trading
@@ -52,13 +52,15 @@ class TurtleTradingStrategy(QCAlgorithm):
             self.symbols.append(equity.Symbol)
             
             # Create and store technical indicators for this symbol:
-            # 1. Entry channel (55-day Donchian) for generating entry signals
+            # 1. Entry channel (55-day Donchian) for generating entry signals; custom indicator that needs manual updates
+            # TODO: Use the built-in DonchianChannel indicator instead
             self.entry_channels[equity.Symbol] = self.DONCHIAN(equity.Symbol, self.ENTRY_CHANNEL)
             
-            # 2. Exit channel (20-day Donchian) for generating exit signals
+            # 2. Exit channel (20-day Donchian) for generating exit signals; custom indicator that needs manual updates
+            # TODO: Use the built-in DonchianChannel indicator instead
             self.exit_channels[equity.Symbol] = self.DONCHIAN(equity.Symbol, self.EXIT_CHANNEL)
             
-            # 3. Average True Range (ATR) for volatility measurement and position sizing
+            # 3. Average True Range (ATR) for volatility measurement and position sizing; built-in indicator that updates automatically
             self.atrs[equity.Symbol] = self.ATR(equity.Symbol, self.ATR_PERIOD, MovingAverageType.Simple)
             
             # Log the addition of this symbol to our universe
@@ -67,7 +69,9 @@ class TurtleTradingStrategy(QCAlgorithm):
         # Increase warm-up period to account for longer entry channel
         self.SetWarmUp(timedelta(days=self.ENTRY_CHANNEL))
 
-        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.At(16, 0), self.LogPortfolioState) # TODO: Too much logging - need to reduce this
+        # TODO: Too much logging - need to reduce this; change logging per the table shown in the Notion documentation
+        self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.At(16, 0), self.LogPortfolioState) 
+        
 
     def OnData(self, slice):
         """
@@ -172,7 +176,7 @@ class TurtleTradingStrategy(QCAlgorithm):
                 if self.Portfolio[symbol].IsLong and current_price <= donchain_long_exit:
                     # Calculate and log profit/loss for the exit
                     position = self.Portfolio[symbol]
-                    profit_loss = (current_price - position.AveragePrice) * position.Quantity
+                    profit_loss = position.total_close_profit()  # Uses built-in method
                     profit_loss_percent = (profit_loss / (position.AveragePrice * position.Quantity)) * 100
                     exit_message = (f"Exited Long: {symbol}, Price: {current_price}, "
                                   f"P/L: ${profit_loss:.2f} ({profit_loss_percent:.2f}%)")
@@ -186,7 +190,7 @@ class TurtleTradingStrategy(QCAlgorithm):
                 elif self.Portfolio[symbol].IsShort and current_price >= donchain_short_exit:
                     # Calculate and log profit/loss for the exit
                     position = self.Portfolio[symbol]
-                    profit_loss = (position.AveragePrice - current_price) * abs(position.Quantity)
+                    profit_loss = position.total_close_profit()  # Uses built-in method
                     profit_loss_percent = (profit_loss / (position.AveragePrice * abs(position.Quantity))) * 100
                     exit_message = (f"Exited Short: {symbol}, Price: {current_price}, "
                                   f"P/L: ${profit_loss:.2f} ({profit_loss_percent:.2f}%)")
@@ -204,10 +208,7 @@ class TurtleTradingStrategy(QCAlgorithm):
                         (self.Portfolio[symbol].IsShort and current_price >= self.stop_losses[symbol])):
                         # Calculate and log profit/loss for the stop loss exit
                         position = self.Portfolio[symbol]
-                        if position.IsLong:
-                            profit_loss = (current_price - position.AveragePrice) * position.Quantity
-                        else:
-                            profit_loss = (position.AveragePrice - current_price) * abs(position.Quantity)
+                        profit_loss = position.total_close_profit()  # Uses built-in method
                         profit_loss_percent = (profit_loss / (position.AveragePrice * abs(position.Quantity))) * 100
                         exit_message = (f"Exited position due to stop loss: {symbol}, Price: {current_price}, "
                                       f"P/L: ${profit_loss:.2f} ({profit_loss_percent:.2f}%)")
@@ -221,8 +222,8 @@ class TurtleTradingStrategy(QCAlgorithm):
                 # SECTION 5C: POSITION SCALING (PYRAMIDING)
                 # Check if we can add units to our position
                 if self.Portfolio[symbol].Invested:
-                    current_units = self.position_units[symbol]
-                    if current_units < self.MAX_UNITS:
+                    current_pyramid_level = self.pyramid_level[symbol]
+                    if current_pyramid_level < self.MAX_PYRAMID_LEVELS:
                         # Add to long position if price moves up by 1N (1 ATR)
                         if self.Portfolio[symbol].IsLong:
                             last_price = self.last_add_price.get(symbol, self.entry_prices[symbol][-1])
@@ -236,57 +237,164 @@ class TurtleTradingStrategy(QCAlgorithm):
 
     def EnterLong(self, symbol):
         """
-        Enter a long position for the given symbol. Calculate position size and set stop loss.
+        Enter a long position for the given symbol. This implements the initial entry rules
+        of the Turtle Trading strategy for long positions.
+
+        Process:
+        1. Calculate stop loss price using ATR (2N below entry price)
+        2. Calculate position size based on risk parameters
+        3. Verify sufficient capital for the trade
+        4. Place the market order
+        5. Initialize position tracking variables
+        6. Log the trade details
+
+        Args:
+            symbol: The trading symbol to enter a long position in
+
+        Position Management Variables Set:
+        - entry_prices: List containing the entry price for this first unit
+        - position_units: Set to 1 for this initial unit
+        - last_add_price: Set to entry price for future pyramiding calculations
+        - stop_losses: Set stop loss price for the position
         """
+        # Get reference to the security for price and trading operations
         equity = self.Securities[symbol]
+
+        # Calculate stop loss price (2N below entry)
+        # N = ATR, and we multiply by ATR_MULTIPLIER (2) per Turtle Trading rules
         stop_price = equity.Price - self.atrs[symbol].Current.Value * self.ATR_MULTIPLIER
+
+        # Calculate the position size based on our risk parameters
+        # This ensures we risk exactly RISK_PER_TRADE (2%) of our portfolio
         quantity = self.CalculatePositionSize(equity, stop_price)
+
+        # Calculate the total cost of the position
         cost = quantity * equity.Price
+
+        # Verify we have enough cash to enter the position
         if cost > self.Portfolio.Cash:
             self.Log(f"Not enough cash to enter long position in {symbol}. Required: ${cost}, Available: ${self.Portfolio.Cash}")
             return
-        entry_price = equity.Price  # Capture the exact entry price
+
+        # Capture the exact entry price before placing the order
+        entry_price = equity.Price
+
+        # Place the market order for the calculated quantity
         self.MarketOrder(symbol, quantity)
-        self.entry_prices[symbol] = [entry_price]  # Initialize as list with first entry price
-        self.position_units[symbol] = 1
-        self.last_add_price[symbol] = entry_price
+
+        # Initialize position tracking variables
+        self.entry_prices[symbol] = [entry_price]  # List with first entry price
+        self.pyramid_level[symbol] = 1            # First pyramid level of potentially 4
+        self.last_add_price[symbol] = entry_price  # Reference price for pyramiding
+        self.stop_losses[symbol] = stop_price      # Stop loss for the position
+
+        # Log the trade details
         trade_info = f"Entered Long: {symbol}, Quantity: {quantity}, Entry Price: ${entry_price}, Stop: ${stop_price}"
         self.Log(trade_info)
         self.daily_trades.append(trade_info)
-        self.stop_losses[symbol] = stop_price
 
     def EnterShort(self, symbol):
         """
-        Enter a short position for the given symbol. Calculate position size and set stop loss.
+        Enter a short position for the given symbol. This implements the initial entry rules
+        of the Turtle Trading strategy for short positions.
+
+        Process:
+        1. Calculate stop loss price using ATR (2N above entry price)
+        2. Calculate position size based on risk parameters
+        3. Verify sufficient capital for the trade
+        4. Place the market order
+        5. Initialize position tracking variables
+        6. Log the trade details
+
+        Args:
+            symbol: The trading symbol to enter a short position in
+
+        Position Management Variables Set:
+        - entry_prices: List containing the entry price for this first unit
+        - position_units: Set to 1 for this initial unit
+        - last_add_price: Set to entry price for future pyramiding calculations
+        - stop_losses: Set stop loss price for the position
         """
+        # Get reference to the security for price and trading operations
         equity = self.Securities[symbol]
+
+        # Calculate stop loss price (2N above entry)
+        # N = ATR, and we multiply by ATR_MULTIPLIER (2) per Turtle Trading rules
         stop_price = equity.Price + self.atrs[symbol].Current.Value * self.ATR_MULTIPLIER
+
+        # Calculate the position size based on our risk parameters
+        # This ensures we risk exactly RISK_PER_TRADE (2%) of our portfolio
         quantity = self.CalculatePositionSize(equity, stop_price)
+
+        # Calculate the total cost of the position
         cost = quantity * equity.Price
+
+        # Verify we have enough cash to enter the position
         if cost > self.Portfolio.Cash:
             self.Log(f"Not enough cash to enter short position in {symbol}. Required: ${cost}, Available: ${self.Portfolio.Cash}")
             return
-        entry_price = equity.Price  # Capture the exact entry price
+
+        # Capture the exact entry price before placing the order
+        entry_price = equity.Price
+
+        # Place the market order for the calculated quantity (negative for short)
         self.MarketOrder(symbol, -quantity)
-        self.entry_prices[symbol] = [entry_price]  # Initialize as list with first entry price
-        self.position_units[symbol] = 1
-        self.last_add_price[symbol] = entry_price
+
+        # Initialize position tracking variables
+        self.entry_prices[symbol] = [entry_price]  # List with first entry price
+        self.pyramid_level[symbol] = 1            # First pyramid level of potentially 4
+        self.last_add_price[symbol] = entry_price  # Reference price for pyramiding
+        self.stop_losses[symbol] = stop_price      # Stop loss for the position
+
+        # Log the trade details
         trade_info = f"Entered Short: {symbol}, Quantity: {quantity}, Entry Price: ${entry_price}, Stop: ${stop_price}"
         self.Log(trade_info)
         self.daily_trades.append(trade_info)
-        self.stop_losses[symbol] = stop_price
 
     def CalculatePositionSize(self, equity, stop_price):
         """
-        Calculate the position size based on risk per trade and stop loss distance.
+        Calculate the position size (number of shares/contracts) based on the Turtle Trading
+        risk management rules. This ensures we risk exactly RISK_PER_TRADE (2%) of our
+        total portfolio value on each trade.
+
+        Process:
+        1. Calculate the dollar amount we're willing to risk (2% of portfolio)
+        2. Calculate the risk per share (distance from entry to stop)
+        3. Calculate how many shares we can take while maintaining our risk parameters
+
+        Args:
+            equity: The security we're trading (contains price information)
+            stop_price: The price at which we'll exit if the trade goes against us
+
+        Returns:
+            int: The number of shares/contracts to trade (minimum 1)
+
+        Risk Management:
+        - Uses RISK_PER_TRADE (2%) of total portfolio value
+        - Ensures position size aligns with stop loss distance
+        - Prevents division by zero in case of invalid stop loss
         """
+        # Calculate the dollar amount we're willing to risk on this trade
+        # For example: $100,000 portfolio * 0.02 risk = $2,000 risk per trade
+        # TODO: Need to determine if we should use the total portfolio value or just the cash available
+        # Based on the documentation, it seems like we should use the total portfolio value which includes the non-liquid profits
         risk_amount = self.Portfolio.TotalPortfolioValue * self.RISK_PER_TRADE
+
+        # Calculate how much we'll lose per share if stopped out
+        # For example: Entry at $100, Stop at $95 = $5 risk per share
         risk_per_share = abs(equity.Price - stop_price)
+
+        # Handle edge case where entry price equals stop price
         if risk_per_share == 0:
             self.Log(f"Risk per share for {equity.Symbol} is 0, using minimum position size")
-            return 1  # Return minimum position size instead of 0
+            return 1  # Return minimum position size to prevent division by zero
+
+        # Calculate number of shares based on risk parameters
+        # For example: $2,000 risk / $5 risk per share = 400 shares
         share_quantity = math.floor(risk_amount / risk_per_share)
-        return max(1, share_quantity)  # Ensure we always return at least 1 share
+
+        # Ensure we always return at least 1 share/contract
+        return max(1, share_quantity)
 
     def DONCHIAN(self, symbol, period):
         """
@@ -385,11 +493,11 @@ class TurtleTradingStrategy(QCAlgorithm):
             self.entry_prices[symbol] = []
         self.entry_prices[symbol].append(equity.Price)  # Record this unit's entry price
         self.last_add_price[symbol] = equity.Price      # Update price level for next pyramid entry
-        self.position_units[symbol] = self.position_units[symbol] + 1  # Increment unit counter
+        self.pyramid_level[symbol] = self.pyramid_level[symbol] + 1  # Increment unit counter
         self.stop_losses[symbol] = stop_price  # Update stop loss for entire position
 
         # Log the addition to the position
-        trade_info = (f"Added to Long: {symbol}, Unit: {self.position_units[symbol]}, "
+        trade_info = (f"Added to Long: {symbol}, Pyramid Level: {self.pyramid_level[symbol]}, "
                      f"Quantity: {quantity}, Price: {equity.Price}, Stop: {stop_price}")
         self.Log(trade_info)
         self.daily_trades.append(trade_info)
@@ -429,11 +537,11 @@ class TurtleTradingStrategy(QCAlgorithm):
             self.entry_prices[symbol] = []
         self.entry_prices[symbol].append(equity.Price)  # Record this unit's entry price
         self.last_add_price[symbol] = equity.Price      # Update price level for next pyramid entry
-        self.position_units[symbol] = self.position_units[symbol] + 1  # Increment unit counter
+        self.pyramid_level[symbol] = self.pyramid_level[symbol] + 1  # Increment unit counter
         self.stop_losses[symbol] = stop_price  # Update stop loss for entire position
 
         # Log the addition to the position
-        trade_info = (f"Added to Short: {symbol}, Unit: {self.position_units[symbol]}, "
+        trade_info = (f"Added to Short: {symbol}, Pyramid Level: {self.pyramid_level[symbol]}, "
                      f"Quantity: {quantity}, Price: {equity.Price}, Stop: {stop_price}")
         self.Log(trade_info)
         self.daily_trades.append(trade_info)
@@ -446,8 +554,8 @@ class TurtleTradingStrategy(QCAlgorithm):
             del self.stop_losses[symbol]
         if symbol in self.entry_prices:
             del self.entry_prices[symbol]
-        if symbol in self.position_units:
-            del self.position_units[symbol]
+        if symbol in self.pyramid_level:
+            del self.pyramid_level[symbol]
         if symbol in self.last_add_price:
             del self.last_add_price[symbol]
 
