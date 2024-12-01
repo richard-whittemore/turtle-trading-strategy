@@ -26,9 +26,9 @@ class TurtleTradingStrategy(QCAlgorithm):
         self.ATR_MULTIPLIER = 2      # Per Turtle Trading Strategy default of 2 ATRs (i.e. 2N) 
 
         # Technical Indicators - Used for generating trading signals and calculating volatility
-        self.entry_channels = {}  # Dictionary[Symbol, DonchianChannel] - Tracks entry channel indicators for each symbol
-        self.exit_channels = {}   # Dictionary[Symbol, DonchianChannel] - Tracks exit channel indicators for each symbol
-        self.atrs = {}            # Dictionary[Symbol, ATR] - Tracks Average True Range indicators for each symbol
+        self.entry_channels = {}  # Dictionary[Symbol, DonchianChannel] - Tracks entry channel indicators using QuantConnect's built-in DCH indicator
+        self.exit_channels = {}   # Dictionary[Symbol, DonchianChannel] - Tracks exit channel indicators using QuantConnect's built-in DCH indicator
+        self.atrs = {}            # Dictionary[Symbol, ATR] - Tracks Average True Range indicators using QuantConnect's built-in ATR indicator
 
         # Position Management - Track active positions and their characteristics
         self.stop_losses = {}     # Dictionary[Symbol, float] - Tracks stop loss prices for each position
@@ -51,11 +51,11 @@ class TurtleTradingStrategy(QCAlgorithm):
             # Store the Symbol object for future reference
             self.symbols.append(equity.Symbol)
             
-            # Create and store technical indicators for this symbol:
-            # 1. Entry channel (55-day Donchian) for generating entry signals
+            # Create and store technical indicators for this symbol using QuantConnect's built-in indicators:
+            # 1. Entry channel (55-day Donchian) for generating entry signals using QuantConnect's DCH indicator
             self.entry_channels[equity.Symbol] = self.DCH(equity.Symbol, self.ENTRY_CHANNEL)
             
-            # 2. Exit channel (20-day Donchian) for generating exit signals
+            # 2. Exit channel (20-day Donchian) for generating exit signals using QuantConnect's DCH indicator
             self.exit_channels[equity.Symbol] = self.DCH(equity.Symbol, self.EXIT_CHANNEL)
             
             # 3. Average True Range (ATR) for volatility measurement and position sizing
@@ -74,20 +74,19 @@ class TurtleTradingStrategy(QCAlgorithm):
     def OnData(self, slice):
         """
         Process new market data and manage trading positions.
-        This is the main trading logic implementation of the Turtle Trading Strategy.
+        This is the main trading logic implementation of the Turtle Trading Strategy System 2.
 
         The method performs the following steps for each symbol:
         1. Skip processing if still in warm-up period
         2. Validate position integrity (ensure stop losses exist)
-        3. Update technical indicators with new data
-        4. Check if indicators are ready for trading decisions
-        5. Process trading signals:
+        3. Check if indicators are ready for trading decisions
+        4. Process trading signals:
             a. For non-invested positions:
-               - Enter long if price breaks above 55-day high
-               - Enter short if price breaks below 55-day low
+               - Enter long if price breaks above 55-day Donchian Channel high
+               - Enter short if price breaks below 55-day Donchian Channel low
             b. For existing positions:
-               - Exit long if price breaks below 20-day low
-               - Exit short if price breaks above 20-day high
+               - Exit long if price breaks below 20-day Donchian Channel low
+               - Exit short if price breaks above 20-day Donchian Channel high
                - Exit if stop loss is hit  #TODO: Perhaps it might be better to use a 'STOP MARKET ORDER' when entering a position
                - Add units (pyramid) if price moves favorably by 1N (1 ATR)
 
@@ -95,10 +94,10 @@ class TurtleTradingStrategy(QCAlgorithm):
             slice: Contains market data for the current time step
 
         Trading Rules Implemented:
-        - System 2 breakout periods (55 days for entry, 20 days for exit)
+        - System 2 breakout periods (55-day Donchian Channel for entry, 20-day for exit)
         - Position sizing based on N (ATR)
         - Stop losses at 2N from entry
-        - Maximum 4 units per position
+        - Maximum 4 pyramid levels per position
         - Add units when price moves by 1N in favorable direction
         """
         # Skip processing during warm-up period
@@ -133,25 +132,20 @@ class TurtleTradingStrategy(QCAlgorithm):
             # Log current price data
             self.Log(f"Data for {symbol}: Open={slice.Bars[symbol].Open}, High={slice.Bars[symbol].High}, Low={slice.Bars[symbol].Low}, Close={slice.Bars[symbol].Close}")
 
-            # Update technical indicators with latest price data
-            # TODO: Determine if we still need this since we are now using the built-in Donchian channel indicator
-            self.entry_channels[symbol].Update(slice.Bars[symbol])
-            self.exit_channels[symbol].Update(slice.Bars[symbol])
-
-            # Verify indicators are ready before making trading decisions
+            # Verify QuantConnect's built-in indicators are ready before making trading decisions
             if not self.entry_channels[symbol].IsReady or not self.exit_channels[symbol].IsReady or not self.atrs[symbol].IsReady:
                 self.Log(f"Indicators not ready for {symbol}. Entry: {self.entry_channels[symbol].IsReady}, Exit: {self.exit_channels[symbol].IsReady}, ATR: {self.atrs[symbol].IsReady}")
                 continue
 
             # SECTION 3: CALCULATE TRADING SIGNALS
-            # Get current price and breakout levels
+            # Get current price and Donchian Channel breakout levels from QuantConnect's DCH indicator
             current_price = slice.Bars[symbol].Close
-            donchain_long_entry = self.entry_channels[symbol].Upper.Current.Value    # 55-day high for long entries
-            donchain_short_entry = self.entry_channels[symbol].Lower.Current.Value   # 55-day low for short entries
-            donchain_short_exit = self.exit_channels[symbol].Upper.Current.Value     # 20-day high for short exits
-            donchain_long_exit = self.exit_channels[symbol].Lower.Current.Value      # 20-day low for long exits
+            donchain_long_entry = self.entry_channels[symbol].Upper.Current.Value    # System 2: 55-day high for long entry signals
+            donchain_short_entry = self.entry_channels[symbol].Lower.Current.Value   # System 2: 55-day low for short entry signals
+            donchain_short_exit = self.exit_channels[symbol].Upper.Current.Value     # System 2: 20-day high for short exit signals
+            donchain_long_exit = self.exit_channels[symbol].Lower.Current.Value      # System 2: 20-day low for long exit signals
 
-            # Log current price and entry levels
+            # Log current price and Donchian Channel levels
             self.Log(f"Symbol: {symbol}, Price: {current_price}, Donchain Long Entry: {donchain_long_entry}, Donchain Short Entry: {donchain_short_entry}")
 
             # SECTION 4: ENTRY LOGIC
