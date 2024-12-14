@@ -70,6 +70,72 @@ class TurtleTradingStrategy(QCAlgorithm):
         # TODO: Too much logging - need to reduce this; change logging per the table shown in the Notion documentation
         self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.At(16, 0), self.LogPortfolioState) 
         
+        # Portfolio Management - Track peak value and drawdown state
+        self.peak_portfolio_value = self.Portfolio.TotalPortfolioValue
+        self.current_drawdown_level = 0  # Tracks how many 20% drawdowns we've applied
+        self.original_portfolio_value = self.Portfolio.TotalPortfolioValue
+        self.last_drawdown_base = self.Portfolio.TotalPortfolioValue  # Base value for drawdown calculations
+
+    def GetAvailablePortfolioValue(self):
+        """
+        Calculate the available portfolio value after applying drawdown rules.
+        For every 10% loss from peak, we reduce available capital by 20%.
+        For every 10% recovery, we increase available capital by 20%.
+        
+        Returns:
+            float: The adjusted portfolio value after applying drawdown rules
+        """
+        current_value = self.Portfolio.TotalPortfolioValue
+        
+        # Update peak value if we're at a new high
+        if current_value > self.peak_portfolio_value:
+            self.peak_portfolio_value = current_value
+            self.last_drawdown_base = current_value  # Reset base value for drawdown calculations
+            self.current_drawdown_level = 0  # Reset drawdown level
+            return current_value
+        
+        # Calculate percentage decline from peak
+        decline_percentage = (self.peak_portfolio_value - current_value) / self.peak_portfolio_value
+        
+        # Calculate how many 10% decline thresholds we've crossed
+        decline_thresholds = int(decline_percentage / 0.10)
+        
+        # If we're in a drawdown
+        if decline_thresholds > 0:
+            # If we've crossed a new threshold, update the base value
+            if decline_thresholds != self.current_drawdown_level:
+                self.last_drawdown_base = self.peak_portfolio_value * (1 - (0.10 * decline_thresholds))
+                self.current_drawdown_level = decline_thresholds
+                
+                # Calculate reduction based on peak value
+                reduction_multiplier = (1 - 0.20) ** decline_thresholds
+                adjusted_value = self.peak_portfolio_value * reduction_multiplier
+                
+                self.Log(f"New drawdown level {decline_thresholds}")
+                self.Log(f"Base value adjusted to: ${self.last_drawdown_base}")
+                self.Log(f"Available capital reduced to: ${adjusted_value}")
+                
+                return adjusted_value
+            
+            # If we're still in the same drawdown level, use the last base value
+            reduction_multiplier = (1 - 0.20) ** self.current_drawdown_level
+            return self.last_drawdown_base * reduction_multiplier
+        
+        # If we're in recovery
+        elif current_value < self.original_portfolio_value:
+            # Calculate recovery percentage from the last drawdown base
+            recovery_percentage = (current_value - self.last_drawdown_base) / self.last_drawdown_base
+            
+            # Calculate how many 10% recovery thresholds we've crossed
+            recovery_thresholds = int(recovery_percentage / 0.10)
+            
+            # Apply 20% increase for each 10% recovery threshold
+            increase_multiplier = (1 + 0.20) ** recovery_thresholds
+            adjusted_value = self.last_drawdown_base * min(increase_multiplier, 1.0)
+            
+            return min(adjusted_value, self.original_portfolio_value)
+        
+        return current_value
 
     def OnData(self, slice):
         """
@@ -344,47 +410,25 @@ class TurtleTradingStrategy(QCAlgorithm):
 
     def CalculatePositionSize(self, equity, stop_price):
         """
-        Calculate the position size (number of shares/contracts) based on the Turtle Trading
-        risk management rules. This ensures we risk exactly RISK_PER_TRADE (2%) of our
-        total portfolio value on each trade.
-
-        Process:
-        1. Calculate the dollar amount we're willing to risk (2% of portfolio)
-        2. Calculate the risk per share (distance from entry to stop)
-        3. Calculate how many shares we can take while maintaining our risk parameters
-
-        Args:
-            equity: The security we're trading (contains price information)
-            stop_price: The price at which we'll exit if the trade goes against us
-
-        Returns:
-            int: The number of shares/contracts to trade (minimum 1)
-
-        Risk Management:
-        - Uses RISK_PER_TRADE (2%) of total portfolio value
-        - Ensures position size aligns with stop loss distance
-        - Prevents division by zero in case of invalid stop loss
+        Calculate the position size considering drawdown rules.
         """
+        # Use adjusted portfolio value for risk calculations
+        adjusted_portfolio_value = self.GetAvailablePortfolioValue()
+        
         # Calculate the dollar amount we're willing to risk on this trade
-        # For example: $100,000 portfolio * 0.02 risk = $2,000 risk per trade
-        # TODO: Need to determine if we should use the total portfolio value or just the cash available
-        # Based on the documentation, it seems like we should use the total portfolio value which includes the non-liquid profits
-        risk_amount = self.Portfolio.TotalPortfolioValue * self.RISK_PER_TRADE
+        risk_amount = adjusted_portfolio_value * self.RISK_PER_TRADE
 
         # Calculate how much we'll lose per share if stopped out
-        # For example: Entry at $100, Stop at $95 = $5 risk per share
         risk_per_share = abs(equity.Price - stop_price)
 
         # Handle edge case where entry price equals stop price
         if risk_per_share == 0:
             self.Log(f"Risk per share for {equity.Symbol} is 0, using minimum position size")
-            return 1  # Return minimum position size to prevent division by zero
+            return 1
 
         # Calculate number of shares based on risk parameters
-        # For example: $2,000 risk / $5 risk per share = 400 shares
         share_quantity = math.floor(risk_amount / risk_per_share)
 
-        # Ensure we always return at least 1 share/contract
         return max(1, share_quantity)
 
     def LogPortfolioState(self):
@@ -442,6 +486,13 @@ class TurtleTradingStrategy(QCAlgorithm):
         self.daily_trades = []
 
         self.Log("=====================================")
+
+        # Add portfolio drawdown information to the daily log
+        self.Log(f"Peak Portfolio Value: ${self.peak_portfolio_value}")
+        self.Log(f"Available Portfolio Value (after drawdown rules): ${self.GetAvailablePortfolioValue()}")
+        decline_percentage = (self.peak_portfolio_value - self.Portfolio.TotalPortfolioValue) / self.peak_portfolio_value
+        self.Log(f"Current Decline from Peak: {decline_percentage:.2%}")
+        self.Log(f"Current Drawdown Level: {self.current_drawdown_level}")
 
     def AddToLong(self, symbol):
         """
