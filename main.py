@@ -14,6 +14,11 @@ class TurtleTradingStrategy(QCAlgorithm):
         Initialize the algorithm with start and end dates, initial cash, and strategy parameters.
         Set up the equities to trade and initialize indicators and stop losses.
         """
+        # Run tests first
+        self.Test_CreateDrawdownMap()
+        self.Test_GetAvailablePortfolioValue()
+        
+        # Continue with normal initialization
         self.SetStartDate(2010, 1, 1)    # TODO: Production version won't need this
         self.SetEndDate(datetime.now())  # TODO: Production version won't need this
         self.SetCash(1000000)            # TODO: Change this to read directly from the account
@@ -72,70 +77,66 @@ class TurtleTradingStrategy(QCAlgorithm):
         
         # Portfolio Management - Track peak value and drawdown state
         self.peak_portfolio_value = self.Portfolio.TotalPortfolioValue
-        self.current_drawdown_level = 0  # Tracks how many 20% drawdowns we've applied
         self.original_portfolio_value = self.Portfolio.TotalPortfolioValue
-        self.last_drawdown_base = self.Portfolio.TotalPortfolioValue  # Base value for drawdown calculations
+        self.drawdown_map = self.CreateDrawdownMap(self.original_portfolio_value)
+
+    def CreateDrawdownMap(self, starting_value, min_value=100):
+        """
+        Create a map of portfolio values to their corresponding effective values for position sizing.
+        Each 10% drop in actual value corresponds to a 20% drop in effective value.
+        
+        Args:
+            starting_value (float): Initial portfolio value
+            min_value (float): Minimum value to calculate down to
+            
+        Returns:
+            dict: Mapping of actual portfolio values to effective position sizing values
+        """
+        drawdown_map = {}
+        current_actual = starting_value
+        current_effective = starting_value
+        
+        while current_effective > min_value:
+            drawdown_map[current_actual] = current_effective
+            
+            # Calculate next level values
+            actual_reduction = current_effective * 0.10  # 10% of previous effective
+            effective_reduction = current_effective * 0.20  # 20% of previous effective
+            
+            current_actual = current_actual - actual_reduction
+            current_effective = current_effective - effective_reduction
+            
+        return drawdown_map
 
     def GetAvailablePortfolioValue(self):
         """
-        Calculate the available portfolio value after applying drawdown rules.
-        For every 10% loss from peak, we reduce available capital by 20%.
-        For every 10% recovery, we increase available capital by 20%.
+        Get the effective portfolio value for position sizing based on drawdown map.
+        If current value exceeds peak, recreate the drawdown map from the new peak.
         
         Returns:
-            float: The adjusted portfolio value after applying drawdown rules
+            float: The effective portfolio value to use for position sizing
         """
-        current_value = self.Portfolio.TotalPortfolioValue
+        current_portfolio_value = self.Portfolio.TotalPortfolioValue
         
-        # Update peak value if we're at a new high
-        if current_value > self.peak_portfolio_value:
-            self.peak_portfolio_value = current_value
-            self.last_drawdown_base = current_value  # Reset base value for drawdown calculations
-            self.current_drawdown_level = 0  # Reset drawdown level
-            return current_value
-        
-        # Calculate percentage decline from peak
-        decline_percentage = (self.peak_portfolio_value - current_value) / self.peak_portfolio_value
-        
-        # Calculate how many 10% decline thresholds we've crossed
-        decline_thresholds = int(decline_percentage / 0.10)
-        
-        # If we're in a drawdown
-        if decline_thresholds > 0:
-            # If we've crossed a new threshold, update the base value
-            if decline_thresholds != self.current_drawdown_level:
-                self.last_drawdown_base = self.peak_portfolio_value * (1 - (0.10 * decline_thresholds))
-                self.current_drawdown_level = decline_thresholds
-                
-                # Calculate reduction based on peak value
-                reduction_multiplier = (1 - 0.20) ** decline_thresholds
-                adjusted_value = self.peak_portfolio_value * reduction_multiplier
-                
-                self.Log(f"New drawdown level {decline_thresholds}")
-                self.Log(f"Base value adjusted to: ${self.last_drawdown_base}")
-                self.Log(f"Available capital reduced to: ${adjusted_value}")
-                
-                return adjusted_value
+        # If we're at a new peak, update peak and recreate drawdown map
+        if current_portfolio_value > self.peak_portfolio_value:
+            self.peak_portfolio_value = current_portfolio_value
+            self.drawdown_map = self.CreateDrawdownMap(current_portfolio_value)
+            return current_portfolio_value
             
-            # If we're still in the same drawdown level, use the last base value
-            reduction_multiplier = (1 - 0.20) ** self.current_drawdown_level
-            return self.last_drawdown_base * reduction_multiplier
+        # Find the appropriate drawdown level
+        keys = sorted(self.drawdown_map.keys(), reverse=True)
+        previous_effective_value = self.drawdown_map[keys[0]]  # Start with highest level
         
-        # If we're in recovery
-        elif current_value < self.original_portfolio_value:
-            # Calculate recovery percentage from the last drawdown base
-            recovery_percentage = (current_value - self.last_drawdown_base) / self.last_drawdown_base
+        for key in keys:
+            if current_portfolio_value > key:
+                return previous_effective_value
+            if current_portfolio_value == key:
+                return self.drawdown_map[key]
+            previous_effective_value = self.drawdown_map[key]
             
-            # Calculate how many 10% recovery thresholds we've crossed
-            recovery_thresholds = int(recovery_percentage / 0.10)
-            
-            # Apply 20% increase for each 10% recovery threshold
-            increase_multiplier = (1 + 0.20) ** recovery_thresholds
-            adjusted_value = self.last_drawdown_base * min(increase_multiplier, 1.0)
-            
-            return min(adjusted_value, self.original_portfolio_value)
-        
-        return current_value
+        # If we're below the lowest mapped value, return the lowest effective value
+        return self.drawdown_map[keys[-1]]
 
     def OnData(self, slice):
         """
@@ -487,12 +488,15 @@ class TurtleTradingStrategy(QCAlgorithm):
 
         self.Log("=====================================")
 
-        # Add portfolio drawdown information to the daily log
+        self.Log(f"Current Portfolio Value: ${self.Portfolio.TotalPortfolioValue}")
+        self.Log(f"Effective Portfolio Value: ${self.GetAvailablePortfolioValue()}")
         self.Log(f"Peak Portfolio Value: ${self.peak_portfolio_value}")
-        self.Log(f"Available Portfolio Value (after drawdown rules): ${self.GetAvailablePortfolioValue()}")
-        decline_percentage = (self.peak_portfolio_value - self.Portfolio.TotalPortfolioValue) / self.peak_portfolio_value
-        self.Log(f"Current Decline from Peak: {decline_percentage:.2%}")
-        self.Log(f"Current Drawdown Level: {self.current_drawdown_level}")
+        
+        # Log first few entries of drawdown map for verification
+        levels = list(self.drawdown_map.items())[:5]
+        self.Log("Current Drawdown Map (first 5 levels):")
+        for actual, effective in levels:
+            self.Log(f"  At ${actual:.2f} -> Use ${effective:.2f}")
 
     def AddToLong(self, symbol):
         """
@@ -594,3 +598,50 @@ class TurtleTradingStrategy(QCAlgorithm):
             del self.pyramid_level[symbol]
         if symbol in self.last_add_price:
             del self.last_add_price[symbol]
+
+    def Test_CreateDrawdownMap(self):
+        """Test the drawdown map creation logic"""
+        # Test case 1: Basic map creation
+        test_map = self.CreateDrawdownMap(1000000, min_value=100)
+        
+        # Test initial and first few levels
+        self.AssertEqual(test_map[1000000], 1000000, "First level should match")
+        self.AssertEqual(test_map[900000], 800000, "Second level should be 20% lower")
+        self.AssertEqual(test_map[820000], 640000, "Third level should compound correctly")
+        self.AssertEqual(test_map[756000], 512000, "Fourth level should compound correctly")
+        self.AssertEqual(test_map[704800], 409600, "Fifth level should compound correctly")
+        
+        # Test specific values throughout the range
+        self.AssertEqual(test_map[604857.6], 209715.2, "Mid-range value should calculate correctly")
+        
+        # Test map properties
+        sorted_keys = sorted(test_map.keys(), reverse=True)
+        self.AssertEqual(sorted_keys[0], 1000000, "Highest key should be starting value")
+        self.AssertGreater(len(test_map), 10, "Should have multiple drawdown levels")
+        
+    def Test_GetAvailablePortfolioValue(self):
+        """Test the portfolio value lookup logic"""
+        # Setup
+        self.peak_portfolio_value = 1000000
+        self.drawdown_map = self.CreateDrawdownMap(1000000, min_value=100)
+        
+        # Test cases
+        test_cases = [
+            # Test values at and near thresholds
+            (1000000, 1000000, "Peak value should return itself"),
+            (950000, 1000000, "Value between levels should use higher effective value"),
+            (900000, 800000, "Exact match should use corresponding effective value"),
+            (850000, 800000, "Value between levels should use higher effective value"),
+        ]
+        
+        for current_value, expected_value, message in test_cases:
+            # Mock the portfolio value
+            self.Portfolio.TotalPortfolioValue = current_value
+            result = self.GetAvailablePortfolioValue()
+            self.AssertEqual(result, expected_value, message)
+            
+        # Test peak value update
+        self.Portfolio.TotalPortfolioValue = 1500000
+        result = self.GetAvailablePortfolioValue()
+        self.AssertEqual(self.peak_portfolio_value, 1500000, "Peak value should update")
+        self.AssertEqual(result, 1500000, "Should return new peak value")
